@@ -6,3 +6,4 @@ others. For more information, please read the following page:
 
 <https://libreboot.org/docs/sitegen/>
 # bllry.com
+# bllry.com inspired from libreboot

@@ -1,0 +1,578 @@
+#!/usr/bin/env sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2017,2021-2023 Leah Rowe <leah@libreboot.org>
+# SPDX-FileCopyrightText: 2017 Alyssa Rosenzweig <alyssa@rosenzweig.io>
+# SPDX-FileCopyrightText: 2017 Michael Reed <michael@michaelreed.io>
+
+[ "${DEBUG+set}" = "set" ] && set -v
+set -u -e
+
+id -u 1>/dev/null 2>/dev/null || exit 1
+if [ "$(id -u)" = "0" ]; then
+	printf "%s: Running as root not allowed, for security.\n" "$0" 1>&2
+	exit 1
+fi
+
+export LC_COLLATE=C
+export LC_ALL=C
+
+. "include/err.sh"
+. "include/news.sh"
+. "include/option.sh"
+
+tmpdir=""
+tmpdir_was_set="y"
+[ -z "${TMPDIR+x}" ] && tmpdir_was_set="n"
+if [ "${tmpdir_was_set}" = "n" ]; then
+	export TMPDIR="/tmp"
+	tmpdir="$(mktemp -d -t untitledssg_XXXXXXXX)"
+	export TMPDIR="${tmpdir}"
+else
+	export TMPDIR="${TMPDIR}"
+	tmpdir="${TMPDIR}"
+fi
+
+UVARS="TITLE CSS DOMAIN BLOGTITLE LAZY BLOGDESCRIPTION DEFAULTLANG BLOGDIR"
+UVARS="$UVARS SITEMAP BLOGINDEX BLOGINDEXLATEST"
+eval "$(setvars "" sitechanged $UVARS tmproll)"
+
+linkpath="${0}"
+linkname="${linkpath##*/}"
+
+main()
+{
+	check_path d www || fail "invalid www/ directory"
+
+	eval "$(setvars "" _cmd _args)"
+	mode="sites"
+	if [ "${linkname}" != "clean" ]; then
+		[ $# -gt 0 ] && \
+			mode="${1}" && shift 1
+		if [ "${mode}" = "pages" ] && [ $# -lt 1 ]; then
+			mode="sites"
+		elif [ "${mode}" != "pages" ] && [ "${mode}" != "sites" ]; then
+			printf "%s\n" "${mode}" > "${tmpdir}/args"
+			_args="${mode}"
+			mode="sites"
+		fi
+	fi
+
+	if [ $# -lt 1 ] && [ -z "${_args}" ]; then
+		for x in www/*; do
+			printf "%s\n" "${x}" >> "${tmpdir}/args"
+		done
+	else
+		for x in "$@"; do
+			printf "%s\n" "${x}" >> "${tmpdir}/args"
+		done
+	fi
+	[ "${linkname}" = "clean" ] && _cmd="cleansite"
+	if [ "${linkname}" != "clean" ]; then
+		[ "${mode}" = "sites" ] && _cmd="buildsite"
+		[ "${mode}" = "pages" ] && _cmd="buildpage"
+	fi
+	[ -z "${_cmd}" ] && fail "unrecognised command"
+
+	while read -r x; do
+		[ -z "${x}" ] && continue
+		eval "$(setvars "" $UVARS)"
+		startdate=$(date +%s%N | cut -b1-13)
+		$_cmd "$x"	
+		enddate=$(date +%s%N | cut -b1-13)
+		endtime=$(( enddate - startdate ))
+		printf "time: %d milliseconds\n" "${endtime}"
+	done < "${tmpdir}/args"
+
+	untitled_exit 0
+}
+
+buildsite()
+{
+	eval "$(setvars "n" sitechanged tmproll)"
+	_sitedir="${1#www/}"
+	_sitedir="www/${_sitedir%%/*}"
+
+	printf "\nProcessing files in site: %s\n" "${_sitedir##*/}"
+
+	check_path d "${_sitedir}" || return 0
+	check_symlinks "${_sitedir}" "sitedir" || return 0
+
+	check_site_changed "${_sitedir}"
+	check_site_config "${_sitedir}" || return 0
+
+	mknews "$_sitedir"
+
+	find -L "${_sitedir}/site/" -name "*.md" > "${tmpdir}/pages"
+	while read -r y; do
+		mkhtml "${y}" "${_sitedir##*/}"
+	done < "${tmpdir}/pages"
+
+	mksitemap "${_sitedir}"
+}
+
+buildpage()
+{
+	[ $# -lt 1 ] && return 0
+
+	_file=${1%.md}	
+	_file="${1}"
+	_file="${_file#/}"
+	_file="${_file#./}"
+	_filelocal="${_file##*/}"
+
+	[ "${_file%.md}" = "${_file}" ] && return 0
+
+	# path translation
+	# e.g. libreboot/index.md becomes www/libreboot/site/index.md
+	# e.g. libreboot/site/index.md becomes www/libreboot/site/index.md
+	# e.g. www/libreboot/index.md becomes www/libreboot/site/index.md
+	# in all cases, the correct path is: www/libreboot/site/index.md
+	_file="${_file#www/}"
+	_realfile="${_file#*/}"
+	[ "${_realfile#site/}" = "${_realfile}" ] && \
+		_realfile="site/${_realfile}"
+	_file="www/${_file%%/*}/${_realfile}"
+
+	_sitedir="${_file#www/}"
+	[ "${_sitedir}" = "${_file}" ] && return 0
+	_sitename="${_sitedir%%/*}"
+	[ "${_sitename}" = "${_sitedir}" ] && return 0
+	_sitedir="www/${_sitename}"
+	check_path d "${_sitedir}" || return 0
+	check_symlinks "${_sitedir}" "sitedir" || return 0
+
+	printf "\nPage: %s\n" "${_file}"
+	printf "Processing page in site directory: %s/site/\n" "${_sitedir}"
+
+	check_site_config "${_sitedir}" || return 0
+
+	mknews "$_sitedir"
+	mkhtml "${_file}" "${_sitedir##*/}"
+	
+	mksitemap "${_sitedir}"
+}
+
+cleansite() {
+	SITENAME="${1##*/}"
+
+	if [ ! -d "www/${SITENAME}/site" ]; then
+		printf "Site '%s' has no site directory; skipping clean\n" \
+		    "${SITENAME}"
+		return 0
+	fi
+	if [ -L "www/${SITENAME}" ] || [ -L "www/${SITENAME}/site" ]; then
+		printf "Site '%s' is a symlink directory. skipping clean\n" \
+		    "${SITENAME}"
+		return 0
+	fi
+
+	printf "Cleaning generated files from site: '%s'\n" "${SITENAME}"
+
+	find -L "www/${SITENAME}/site/" -type f -name "*.html" \
+	    > "${tmpdir}/list"
+	while read -r f; do
+		if [ ! -f "${f}" ]; then continue; fi
+		if [ -L "${f}" ]; then continue; fi
+		if [ -f "${f%.html}.md" ] && [ ! -L "${f%.html}.md" ]; then
+			rm -f "${f}"
+		fi
+	done < "${tmpdir}/list"
+
+	find -L "www/${SITENAME}/site" -type f -name "*.date" \
+	    > "${tmpdir}/list"
+	while read -r f; do
+		if [ ! -f "${f}" ]; then continue; fi
+		if [ -L "${f}" ]; then continue; fi
+		if [ "${f##*/}" = "footer.include.date" ] \
+			|| [ "${f##*/}" = "nav.include.date" ] \
+			|| [ "${f##*/}" = "template.include.date" ]; then
+
+			continue
+		fi
+		rm -f "${f}"
+	done < "${tmpdir}/list"
+
+	rm -f www/"${SITENAME}"/site/feed.xml
+	find -L "www/${SITENAME}/site/" -type f -name "MANIFEST" \
+	    > "${tmpdir}/list"
+	while read -r f; do
+		if [ ! -f "${f}" ]; then continue; fi
+		if [ -L "${f}" ]; then continue; fi
+		for ff in "${f%MANIFEST}"{index.md,index.html,feed.xml}; do
+			if [ ! -f "${ff}" ]; then continue; fi
+			if [ -L "${ff}" ]; then continue; fi
+
+			rm -f "${ff}"
+		done
+	done < "${tmpdir}/list"
+}
+
+# make human readable html sitemap, and a google-friendly xml sitemap
+mksitemap()
+{
+	[ "${SITEMAP}" = "n" ] && return 0
+
+	_sitedir="${1}"
+
+	_tmpfile=$(mktemp -t untitled_www.XXXXXXXXXX)
+	_tmpxml="$(mktemp -t untitled_www.XXXXXXXXXX)"
+
+	if [ -f "${_sitedir}/site/sitemap.include" ]; then
+		cat "${_sitedir}/site/sitemap.include" > "${_tmpfile}"
+	else
+		printf "# Site map\n\nList of pages:\n" \
+		    > "${_tmpfile}"
+	fi
+	printf "\n\n" >> "${_tmpfile}"
+
+	find -L "${_sitedir}/site/" -type f -name "*.md" > "${tmpdir}/toc"
+	sort "${tmpdir}/toc" > "${tmpdir}/toc_sorted"
+	mv "${tmpdir}/toc_sorted" "${tmpdir}/toc"
+
+	printf "<?xml version='1.0' encoding='UTF-8'?>\n" >> "${_tmpxml}"
+	printf "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n" \
+	    >> "${_tmpxml}"
+	printf "<div class='sitemap'>\n" >> "${_tmpfile}"
+	while read -r y; do
+		check_path f "${y}" || continue
+		[ "${y}" = "${_sitedir}/site/sitemap.md" ] && continue
+		_uri="${y##"${_sitedir}/site"}"
+		_uri2="${_uri}"
+		_uri="${_uri%index.md}"
+		_urihtml="${_uri%.md}.html"
+		[ "$_urihtml" != "${_urihtml%/.html}" ] && \
+		    _urihtml="${_urihtml%.html}"
+
+		# for the markdown sitemap, to be compiled into html
+		printf "* %s: [%s](%s)\n" "${_uri}" "$(mktitle "${y}")" \
+		    "${_uri}" >> "${_tmpfile}"
+
+		# xml sitemap, for google and so on
+		printf "  <url>\n" >> "${_tmpxml}"
+		printf "    <loc>%s/%s</loc>\n" "${DOMAIN%/}" "${_urihtml#/}" \
+		    >> "${_tmpxml}"
+		printf "    <lastmod>%s</lastmod>\n" \
+		    "`date -r "$y.date" +"%Y-%m-%d"`" >> "${_tmpxml}"
+		printf "  </url>\n" >> "${_tmpxml}"
+	done < "${tmpdir}/toc"
+	printf "</div>\n\n" >> "${_tmpfile}"
+	printf "</urlset>\n" >> "${_tmpxml}"
+
+	cp "${_tmpfile}" "${_sitedir}/site/sitemap.md"
+	cp "${_tmpxml}" "${_sitedir}/site/sitemap.xml"
+	chmod 644 "${_sitedir}/site/sitemap.xml" "${_sitedir}/site/sitemap.md"
+	rm -f "${_tmpfile}" "${_tmpxml}"
+
+	check_path f "${_sitedir}/site/sitemap.md" || return 0
+	mkhtml "${_sitedir}/site/sitemap.md" "${_sitedir##*/}"
+}
+
+# convert pandoc-markdown file into html, using a template file
+mkhtml()
+{
+	check_path f "${1}" || return 0
+
+	eval "$(setvars "" _css _footer _nav _template)"
+
+	_final="${tmpdir}/final"
+	_file="${1%.md}"
+	_sitedir="www/${2}"
+
+	_filenext="$1.next"
+	_fileprev="$1.prev"
+	_filecurr="${_file%/*}/current.link"
+	_filefirst="${_file%/*}/first.link"
+
+	for navtest in next prev curr first; do
+		eval "navlink=\"\$_file$navtest\""
+
+		[ ! -f "$navlink" ] && eval \
+		    "_file$navtest=\"\"" && continue
+
+		[ -z "$navlink" ] && continue; :
+
+		read -r navpath < "$navlink" || \
+		    err "!read $navtest nav link, for '$_file'"
+
+		[ -z "$navpath" ] && continue; :
+
+		eval "_file$navtest=\"$navpath\""
+	done
+
+	# will be set to y if page changes are detected
+	_needchange="n"
+
+	# e.g. file.md is default(english) and file.ru.md is russian
+	_realpage="${_file##*/}"
+	_realpagelang="${_realpage##*.}"
+	if [ "${_realpagelang}" = "${_realpage}" ]; then
+		_realpagelang="${DEFAULTLANG}"
+	else
+		_file="${_file%".${_realpagelang}"}"
+	fi
+
+	_strconf="lang/${_realpagelang}/strings.cfg"
+	for p in "lang/${DEFAULTLANG}/strings.cfg" "lang/en/strings.cfg"; do
+		[ -f "$_strconf" ] || _strconf="$p"
+	done
+
+	# This is the uri but without any extension, *and without language
+	# extension*. This will be used extensively, especially for backlinks
+	_uri="${_file##"${_sitedir}/site"}" # without file extension e.g. .html
+
+	# Backlink text for each page. This helps with site navigation
+	_backlink=""
+	if [ "${_uri}" != "/index" ]; then # the homepage doesn't need one
+		_backlink="$(getConfigValue "${_strconf}" "BACKLINK_PREVDIR")"
+		[ "${_uri##*/}" = "index" ] || \
+			_backlink="$(getConfigValue "${_strconf}" \
+			    "BACKLINK_CURRENTDIR")"
+	fi
+
+	# Allow a given page to override the footer/nav/template/css file
+	for p in footer nav template css; do
+		eval "$(setvars "" _${p})"
+		[ -f "${_file}.${p}" ] && \
+			eval "$(setvars "${_file}.${p}" _${p})"
+		[ "${_realpagelang}" != "${DEFAULTLANG}" ] && \
+		    [ -f "${_file}.${_realpagelang}.${p}" ] && \
+			eval "$(setvars "${_file}.${_realpagelang}.$p" _$p)"
+	done
+	[ -z "${_css}" ] || _css="${_css##*/}"
+
+	if [ "${_realpagelang}" != "${DEFAULTLANG}" ]; then
+		_file="${_file}.${_realpagelang}"
+		_uri="${_uri}.${_realpagelang}"
+	fi
+
+	# allow overriding the global footer/nav/template file
+	for p in footer nav template; do
+		eval "[ -z \"\${_${p}}\" ] || continue"
+		[ -f "${_sitedir}/site/${p}.include" ] && \
+			eval "$(setvars "${_sitedir}/site/${p}.include" _${p})"
+		[ "${_realpagelang}" != "${DEFAULTLANG}" ] && \
+		    [ -f "$_sitedir/site/${p}.${_realpagelang}.include" ] && \
+			eval "_$p=\"$_sitedir/site/$p.$_realpagelang.include\""
+	done
+
+	for y in "${_file}.md" "$_footer" "$_nav" "$_template"; do
+		[ -z "${y}" ] && continue
+		filehasnotchanged "${y}" || _needchange="y"
+	done
+
+	if [ "${linkname}" = "roll" ] || [ "${tmproll}" = "y" ]; then
+		_needchange="y"
+	fi
+
+	[ "${_needchange}" = "n" ] && check_path f "${_file}.html" && return 0
+
+	# The news and sitemap function need to know this
+	# because they will only be called if this variable is set to y
+	sitechanged="y"
+
+	_tmpfile=$(mktemp -t untitled_www.XXXXXXXXXX)
+
+	eval "$(setvars "" _date _author _next _prev _curr _last)"
+
+	# This code sucks. TODO: do it better
+	_firstchar=$(head -c 1 "${1}")
+	_firstthreechars=$(head -c 3 "${1}")
+	if [ "${_firstchar}" = "#" ]; then
+		filetitle="$(mktitle "${1}")"
+		_tmp2=$(mktemp -t untitled_www.XXXXXXXXXX)
+		head -n1 "title.example" >"$_tmp2"
+		printf "title: %s\n" "${filetitle}" >> "${_tmp2}"
+		tail -n-2 "title.example" >> "$_tmp2"
+		_tmptitle="$(cat "${_tmp2}")"
+		rm -f "${_tmp2}"
+		_pagetext="$(tail -n+2 "${1}")"
+	elif [ "${_firstchar}" = "%" ]; then
+		_tmp2=$(mktemp -t untitled_www.XXXXXXXXXX)
+
+		_tmptitle="$(head -n3 "${1}")"
+		printf "%s\n" "${_tmptitle}" > "$_tmp2"
+		chunk="$(head -n1 "$_tmp2")"
+
+		chunk="$(tail -n+2 "$_tmp2")"
+		printf "%s\n" "${chunk}" > "$_tmp2"
+		_author="$(head -n1 "$_tmp2")"
+
+		chunk="$(tail -n+2 "$_tmp2")"
+		printf "%s\n" "${chunk}" > "$_tmp2"
+		_date="$(head -n1 "$_tmp2")"
+
+		rm -f "$_tmp2"
+
+		_pagetext="$(tail -n+4 "${1}")"
+	elif [ "${_firstthreechars}" = "---" ]; then
+		_tmptitle="$(head -n4 "${1}")"
+		eval "$(setvars "" _author _date)"
+		_pagetext="$(tail -n+5 "${1}")"
+	else
+		printf "WARNING: no title. defaulting to first line.\n" 1>&2
+		filetitle="$(mktitle "${1}")"
+		_tmp2=$(mktemp -t untitled_www.XXXXXXXXXX)
+		head -n1 "title.example" > "$_tmp2"
+		printf "title: %s\n" "${filetitle}" >> "${_tmp2}"
+		tail -n-2 "title.example" >> "$_tmp2"
+		_tmptitle="$(cat "${_tmp2}")"
+		rm -f "${_tmp2}"
+
+		_pagetext="$(tail -n+2 "${1}")"
+	fi
+
+	printf "%s\n" "${_tmptitle}" > "$_tmpfile"
+
+	if [ -n "${_nav}" ]; then
+		printf "\n<div class='nav'>\n%s\n</div>\n" \
+		    "$(cat "${_nav}")" >> "${_tmpfile}"
+	fi
+
+	# insert the language select menu
+	_langmenu=""
+	_defaultpage="${_file##*/}"
+	_defaultpage="${_defaultpage%.*}"
+	if [ -n "${_defaultpage}" ]; then
+		for y in "${_file%/*}/${_defaultpage}".*.md; do
+			[ ! -f "${y}" ] && continue
+			_langname=$(getlangname "${y}" "${DEFAULTLANG}")
+			_langmenu="${_langmenu} | [${_langname}](${y##*/})"
+		done
+	fi
+	if [ "${_langmenu}" != "" ]; then
+		_langmenu="${_langmenu# | }"
+		if [ -f "${_file%/*}/${_defaultpage}.md" ]; then
+			_langname=$(getlangname \
+			    "${_file%/*}/${_defaultpage}.md" "${DEFAULTLANG}")
+			if [ "${_defaultpage}" = "index" ]; then
+				_langmenu="[${_langname}](./) | ${_langmenu}"
+			else
+			_langmenu="[$_langname]($_defaultpage.md) | $_langmenu"
+			fi
+		fi
+	fi
+	# TODO: display "select language" text
+	[ -n "${_langmenu}" ] && \
+		printf "\n%s\n" "${_langmenu}" >> "${_tmpfile}"
+	[ -n "${_backlink}" ] && \
+		printf "\n%s\n" "${_backlink}" >> "${_tmpfile}"
+
+	# the directory was already checked. no need to
+	# check the validity of it, because it's part
+	# of untitled, not part of a given site, and
+	# what goes in untitled is reviewed thoroughly
+
+	if [ -n "${_author}" ] && [ -n "${_date}" ]; then
+		_pubname="$(getConfigValue "${_strconf}" "PUBLISHED_BY")"
+		printf "\n%s %s\n" "$_pubname" "${_author#% }" >> "$_tmpfile"
+
+		_pubdate="$(getConfigValue "${_strconf}" "PUBLICATION_DATE")"
+		printf "\n%s %s\n" "${_pubdate}" "${_date#% }" >> "${_tmpfile}"
+	fi
+
+	# generate news navigation links, for a given news page:
+	# << | < Prev | > Next | >>
+	_pubnext="$(getConfigValue "$_strconf" "NEXT_LINK")"
+	_pubprev="$(getConfigValue "$_strconf" "PREV_LINK")"
+	_newsnav=""
+	[ -n "$_fileprev" ] && \
+	    _newsnav="<li>[< $_pubprev]($_fileprev)</li>"
+	[ -n "$_filenext" ] && \
+	    _newsnav="$_newsnav<li>[$_pubnext >]($_filenext)</li>"
+	if [ -n "$_newsnav" ]; then
+		[ -n "$_filefirst" ] && \
+		    _newsnav="<li>[<<]($_filefirst)</li>$_newsnav"
+		[ -n "$_filecurr" ] && \
+		    _newsnav="$_newsnav<li>[>>]($_filecurr)</li>"
+	fi
+	[ -z "$_newsnav" ] || \
+	    printf "\n\n<ul class=\"quicknav\">%s</ul>\n" \
+	    "$_newsnav" >> "$_tmpfile" || \
+	    err "!write newsnav: '$newsnav', '$_file'"
+
+	printf "\n%s\n" "${_pagetext}" >> "$_tmpfile"
+
+	if [ -n "${_footer}" ]; then
+		printf "\n<div id='footer'>\n%s\n</div>\n" \
+			"$(cat "${_footer}")" >> "${_tmpfile}"
+	fi
+
+	eval "$(getConfigValues "${_strconf}" MARKDOWN_LINK \
+		MD_TO_HTML_LINK_REWRITE SITEMAP_LINK SHAMELESS_PLUG PDIR)"
+
+	printf "\n%s <%s%s.md>\n" "${MARKDOWN_LINK}" "${DOMAIN}" \
+		"${_uri##/}" >> "${_tmpfile}"
+	check_path f "${_sitedir}/site/sitemap.md" && \
+		printf "\n%s\n" "${SITEMAP_LINK}" >> "${_tmpfile}"
+	# TODO: make this configurable to enable/disable in site.cfg
+	printf "\n%s\n" "${SHAMELESS_PLUG}" >> "${_tmpfile}"
+
+	if [ -z "${MD_TO_HTML_LINK_REWRITE}" ] || \
+		[ "${MD_TO_HTML_LINK_REWRITE}" != "n" ] ; then
+		# change out .md -> .html
+		# but not for external links
+		sed -e \
+		'/\/\//!{s/\.md\(#[a-zA-Z0-9_-]*\)\?\([])]*\)/.html\1\2/g}' \
+		"${_tmpfile}" > "${_final}.md"
+	else
+		cp -f "${_tmpfile}" "${_final}.md"
+	fi
+
+	# toc is always enabled on news pages
+	_toc=$(grep -q "^x-toc-enable: true$" "$_tmpfile" && \
+		printf '%s\n' "--toc --toc-depth=4") || _toc=""
+
+	# TODO: make toc depth configurable in site.cfg
+	[ -f "${_file%/*}/MANIFEST" ] && \
+		_toc="--toc --toc-depth=4"
+
+	printf "Generating '%s.html'\n" "${_file}"
+
+	_html_link="${MARKDOWN_LINK%.md}"
+	_html_link="${DOMAIN}${_uri##/}"
+	if [ "${_html_link##*/}" = "index" ]; then
+		_html_link="${_html_link%/*}/"
+	else
+		_html_link="${_html_link}.html"
+	fi
+
+	canonurl="${_html_link%/*}/${_defaultpage}.html"
+	if [ "$canonurl" != "${canonurl%/index.html}" ]; then
+		canonurl="${canonurl%index.html}"
+	fi
+
+	# parse page description
+	pagedesc="${_file}.md.description"
+	metadesc=""
+	if [ ! -L "$pagedesc" ] && [ -f "$pagedesc" ]; then
+		while read -r descline; do
+			metadesc="$metadesc $descline"
+		done < "$pagedesc"
+		metadesc="${metadesc# }"
+	fi
+
+	pandoc -V lang="$_realpagelang" -V dir="$PDIR" $_toc -f markdown+smart \
+	    -t html "${_final}.md" --preserve-tabs --tab-stop 8 -T "$TITLE" \
+	    -V antisocialurl="$_html_link" -s --css "$CSS" --css "$_css" \
+	    -V antisocialcanon="$canonurl" -V metadesc="$metadesc" \
+	    --template "$_template" --metadata return="" > "${_final}.html"
+
+	# generate section title anchors as [link]
+	sed -e 's_^<h\([123]\) id="\(.*\)">\(.*\)</h\1>_<div class="h"><h\1 id="\2">\3</h\1><a aria-hidden="true" href="#\2">[link]</a></div>_' \
+	    "${_final}.html" > "${_final}.md"
+	mv "${_final}.md" "${_final}.html"
+
+	# LAZY images, if enabled
+	if [ "${LAZY}" = "y" ]; then
+		for y in img iframe audio video; do
+			sed -e "s/<${y}/<${y}\ loading=\"lazy\"/g" \
+			    "${_final}.html" > "${_final}.md"
+			mv "${_final}.md" "${_final}.html"
+		done
+	fi
+
+	mv "${_final}.html" "${_file}.html"
+	rm -f "$_tmpfile"
+}
+
+main "$@"
