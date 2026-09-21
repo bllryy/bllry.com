@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html$if(lang)$ lang="$lang$"$endif$$if(dir)$ dir="$dir$"$endif$>
+<head>
+  <meta charset="utf-8">
+  <meta name="generator" content="pandoc + lbssg">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+$for(author-meta)$
+  <meta name="author" content="$author-meta$">
+$endfor$
+$if(date-meta)$
+  <meta name="dcterms.date" content="$date-meta$">
+$endif$
+  <title>$if(title-prefix)$$title-prefix$ &mdash; $endif$$pagetitle$</title>
+$for(css)$
+  <link rel="stylesheet" href="$css$">
+$endfor$
+<link rel="alternate" type="application/rss+xml" title="RSS Feed" href="/feed.xml"/>
+</head>
+<body>
+<h1>bllry</h1>
+<a href="/">home</a> | <a href="/blogs/">blog</a> | <a href="/vim.html">vim</a> | <a href="https://nixos.tailb0e762.ts.net">git</a> | <a href="/maven-repos.html">maven</a> | <a href="https://search.bllry.com/">Search the web!</a> | <a href="/contact.html">contact</a>
+<hr>
+$if(title)$
+<h2>$title$</h2>
+$if(date)$<p><em>$date$$if(author)$ &mdash; $author$$endif$</em></p>$endif$
+$endif$
+$if(toc)$
+<nav id="$idprefix$TOC">
+<h3>Contents</h3>
+$toc$
+</nav>
+<hr>
+$endif$
+$body$
+</body>
+</html>

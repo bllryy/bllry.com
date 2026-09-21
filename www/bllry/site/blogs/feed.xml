@@ -1,0 +1,17 @@
+<rss version="2.0">
+<channel>
+<title>blog</title>
+<link>https://bllry.com/blogs</link>
+<description>bug writeups and other things</description>
+<item>
+<title>firecracker: W^X bypass via unrestricted mprotect in the vmm seccomp filter</title>
+<link>https://bllry.com/blogs/firecracker1.html</link>
+<description><p>Article: firecracker: W^X bypass via unrestricted mprotect in the vmm seccomp filter</p><p>Web link: https://bllry.com/blogs/firecracker1.html</p></description>
+</item>
+<item>
+<title>crosvm: arbitrary host pointer injection via vhost-user external_map</title>
+<link>https://bllry.com/blogs/crossvm1.html</link>
+<description><p>Article: crosvm: arbitrary host pointer injection via vhost-user external_map</p><p>Web link: https://bllry.com/blogs/crossvm1.html</p></description>
+</item>
+</channel>
+</rss>
