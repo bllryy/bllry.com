@@ -5,7 +5,7 @@ title: Contact
 Email
 =====
 
-**General:** <lilygoscha@gmail.com>
+**General:** Please use my signal
 
 **Security / bug bounty please use my signal:** bllry.89
 
