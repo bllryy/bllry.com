@@ -3,15 +3,22 @@ title: bllry.com
 ...
 
 Hi. I go by Lily. I like working on Security and Programming, bug bounty, and
-game hacking XD. This is my personal site. also use my private no logs search
-engine! [here!](https://search.bllry.com/)
+game hacking XD. This is my personal site. 
+
+Irl I play magic the gathering and 
+
+Recently I had to move my site so everything is messed up but it 100% looks better now!
+
+Some blogs are missing they will be up soon :eyes:
 
 Current
 =======
 
-**[Hound](https://hound.hushkey.dev/)**
+**[Bug Bounty!](https://bllry.com/blogs/)**
 
-High performance job queues for deno native, DENO KV, REDIS, in memory.
+Amzaon, Google, Android, Qemu, and more!
+
+If the blog isint posted its cause the company asked me not to.
 
 Recent
 ======
@@ -21,12 +28,8 @@ Recent
 KVM hypervisor intospector. Reads the vCPU state and guest physical memory
 from the host by injection into QEMU via ptrace.
 
-**[Knit](https://github.com/bllryy/Knit-updated)**
+**[Lattice](https://github.com/bllryy/lattice)**
 
-**[Vexel](https://github.com/bllryy/vexel-updated)**
+I took Two GUI render librarys (Knit and vexel) that I have worked with. And made them one library. 
 
-Two GUI render librarys that I have worked with. Recently updated both to
-1.2.11.
-
-I have recently started hosting my own maven for both of these though it has
-been a hassle to do so.
+Maven isint currently up however it will be soon.
